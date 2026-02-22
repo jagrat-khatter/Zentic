@@ -1,0 +1,102 @@
+npx create-turbo@latest using pnpm
+
+Then to setup tailwind things to keep in mind
+
+@repo/tailwind-config: Holds your shared theme (colors, fonts). It does not generate CSS.
+
+ui: Holds your React components with Tailwind classes. It does not generate CSS.
+
+apps/* (Next.js, React, etc.): The actual individual project. They import the theme, scan the UI package for 
+classes, and generate the final CSS file for the browser.
+
+Step 1: Create the Shared Config Package(in packages folder)
+Create a folder at tailwind-config. This acts as the single source of truth for your design system.
+1. package.json
+{
+  "name": "@repo/tailwind-config",
+  "version": "0.0.0",
+  "private": true,
+  "exports": {
+    ".": "./tailwind.config.ts"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.0"
+  }
+}
+
+2. tailwind.config.ts (in packages/tailwind-config)
+(Note: We use Omit<Config, "content"> because file paths are different for every app).
+import type { Config } from "tailwindcss";
+
+const config: Omit<Config, "content"> = {
+  theme: {
+    extend: {
+      // Add shared colors, fonts, and animations here
+    },
+  },
+  plugins: [],
+};
+
+export default config;
+
+Step 2: Install Dependencies in Apps and Packages
+For every app (apps/web, apps/admin) and every UI package (ui) that uses Tailwind, run these commands 
+inside their respective folders:
+
+# 1. Install the Tailwind engine
+pnpm add -D tailwindcss postcss autoprefixer
+
+# 2. Link your shared config (The --workspace flag is mandatory!)
+pnpm add -D @repo/tailwind-config --workspace
+
+# 3. Generate local config files (creates tailwind.config.js and postcss.config.js)
+npx tailwindcss init -p
+
+Important: Rename the generated tailwind.config.js to tailwind.config.ts in each folder so you can use 
+TypeScript.
+
+Step 3: Configure the Apps (Next.js / React)
+In every app, you must tell Tailwind to use your shared preset AND scan the UI package for classes to create 
+global.css of that specific app/project
+import type { Config } from "tailwindcss";
+import sharedConfig from "@repo/tailwind-config";
+
+const config: Pick<Config, "content" | "presets"> = {
+  content: [
+    // 1. Scan the app's own files
+    "./app/**/*.{js,ts,jsx,tsx,mdx}",
+    "./src/**/*.{js,ts,jsx,tsx,mdx}",
+    "./pages/**/*.{js,ts,jsx,tsx,mdx}",
+    "./components/**/*.{js,ts,jsx,tsx,mdx}",
+    // 2. Scan the shared UI package (CRITICAL STEP)
+    "../../packages/ui/src/**/*.{js,ts,jsx,tsx,mdx}"
+  ],
+  presets: [sharedConfig],
+};
+
+export default config;
+
+globals.css Add the Tailwind directives to the top of your app's main CSS file:
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+Step 4: Configure the UI Package
+Even though the UI package doesn't build the final CSS, it needs a config file so your VS Code 
+IntelliSense (autocomplete) knows about your shared theme colors.
+import type { Config } from "tailwindcss";
+import sharedConfig from "@repo/tailwind-config";
+
+const config: Pick<Config, "content" | "presets"> = {
+  content: ["./src/**/*.{js,ts,jsx,tsx,mdx}"],
+  presets: [sharedConfig],
+};
+
+export default config;
+
+Step 5: Final Sync
+Go back to the root of your entire Turborepo workspace and run:
+
+pnpm install
+
+This ensures all the symlinks between your apps, your UI package, and your Tailwind config are perfectly wired together.
