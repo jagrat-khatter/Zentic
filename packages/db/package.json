@@ -1,0 +1,21 @@
+{
+  "name": "@repo/db",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./index.ts"
+  },
+  "scripts": {
+    "generate": "prisma generate"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "dotenv": "^17.3.1",
+    "prisma": "^7.4.1",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@prisma/client": "^7.4.1"
+  }
+}
