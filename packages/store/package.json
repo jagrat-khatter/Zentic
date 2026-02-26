@@ -1,0 +1,21 @@
+{
+  "name": "@repo/store",
+  "version": "1.0.0",
+  "description": "",
+  "exports": {
+    "./useBalance": "./src/hooks/useBalance.ts"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:^",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "recoil": "^0.7.7"
+  }
+}
