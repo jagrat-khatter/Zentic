@@ -100,3 +100,333 @@ Go back to the root of your entire Turborepo workspace and run:
 pnpm install
 
 This ensures all the symlinks between your apps, your UI package, and your Tailwind config are perfectly wired together.
+
+===========================================================================
+SETTING UP PRISMA IN TURBOREPO (MONOREPO)
+===========================================================================
+
+The Mental Model (How it works in a Monorepo)
+1. @repo/db: Acts as the single source of truth for your database. It holds your schema, manages migrations, and exports a single, safe database connection.
+2. apps/* (Next.js, Express, etc.): Your individual projects NEVER install Prisma directly. They simply import the pre-configured client from @repo/db. 
+
+Step 1: Initialize the Database Package
+Create a new folder at `packages/db`. Navigate into it and initialize the project:
+
+# 1. Create package.json
+pnpm init
+
+# 2. Install TypeScript locally to generate tsconfig
+pnpm add -D typescript
+pnpm exec tsc --init
+
+Update `packages/db/package.json`:
+(Why: "type": "module" is required for Prisma 7. "exports" tells other apps to look at index.ts when they import "@repo/db").
+{
+  "name": "@repo/db",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./index.ts"
+  },
+  "scripts": {
+    "generate": "prisma generate",
+    "push": "prisma db push"
+  }
+}
+
+Update `packages/db/tsconfig.json`:
+(Why: "types": ["node"] is required so TypeScript doesn't throw errors when using `process.env`).
+{
+  "compilerOptions": {
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "target": "esnext",
+    "strict": true,
+    "types": ["node"]
+  }
+}
+
+Step 2: Install Dependencies
+Run these commands inside the `packages/db` folder:
+
+# 1. Install Prisma CLI, dotenv, and Node types (for development)
+pnpm add -D prisma dotenv @types/node
+
+# 2. Install the Prisma Client (for runtime)
+pnpm add @prisma/client
+
+# 3. Initialize Prisma (creates prisma/schema.prisma and .env)
+pnpm exec prisma init
+
+Step 3: Configure Prisma 7+
+Prisma 7 removed the database URL from the schema file. You now need three files to configure your connection.
+
+1. `packages/db/.env`
+Add your database connection string here. 
+(Troubleshooting Tip: If using Neon, remove `&channel_binding=require` from the end of the URL as it causes migration bugs).
+DATABASE_URL="postgresql://user:password@host:port/dbname?sslmode=require"
+
+2. `packages/db/prisma.config.ts`
+Create this file in the root of `packages/db`. 
+(Why: The `!` after the env variable prevents TypeScript strict-mode errors by guaranteeing the string exists).
+import "dotenv/config";
+import { defineConfig } from "@prisma/config";
+
+export default defineConfig({
+  schema: "prisma/schema.prisma",
+  migrations: {
+    path: "prisma/migrations",
+  },
+  datasource: {
+    url: process.env["DATABASE_URL"]!,
+  },
+});
+
+3. `packages/db/prisma/schema.prisma`
+(Why: The provider must be exactly "prisma-client-js" so it outputs to the correct node_modules folder).
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id    Int     @id @default(autoincrement())
+  email String  @unique
+  name  String?
+}
+
+Step 4: Create the Prisma Singleton
+Create `packages/db/index.ts`. 
+(Why: When developing in Next.js, hot-reloading clears the module cache. If you don't use this Singleton pattern, every time you press save, Next.js creates a brand new database connection until your database crashes from "Too many connections").
+
+import { PrismaClient } from "@prisma/client";
+
+const globalForPrisma = globalThis as unknown as { prisma: PrismaClient };
+
+export const prisma = globalForPrisma.prisma || new PrismaClient();
+
+if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
+
+export * from "@prisma/client";
+
+Step 5: Push and Generate
+Whenever you change your `schema.prisma`, run this inside `packages/db`:
+
+pnpm exec prisma migrate dev --name (whatever name you want to give)
+
+This does four things
+> Reads you updated schema
+> Creates the blueprint , a new sql file
+> It does prisma push to update the db instance
+> It does prisma generate to update the types
+
+*CRITICAL NETWORK TIP:* If `pnpm run push` hangs and fails after exactly 5 seconds with a `P1001` error, your current Wi-Fi network (school/work/public) is blocking database port 5432. Switch to a mobile hotspot and try again!
+
+Step 6: Consume in Your Apps
+To use the database in any Next.js app or Node.js backend in your workspace:
+
+1. Link the package:
+Run this inside your app's folder (e.g., `apps/user`):
+pnpm add @repo/db --workspace
+
+2. Sync the workspace (CRITICAL STEP):
+Go back to the ROOT of your entire Turborepo and run:
+pnpm install
+(Why: This tells pnpm to update the symlinks. Without this, your Next.js app won't be able to see the 
+newly generated Prisma Client hidden inside the db package's node_modules).
+
+3. Import and use:
+You can now safely import the typed Prisma instance anywhere in your apps!
+import { prisma } from "@repo/db";
+
+export default async function UsersPage() {
+  const users = await prisma.user.findMany();
+  return <div>{users.map(u => <p key={u.id}>{u.email}</p>)}</div>;
+}
+
+
+===========================================================================
+IMPORTANT CONCEPT: UNDERSTANDING EXPORTS IN A MONOREPO
+===========================================================================
+In a monorepo package (like @repo/db or @repo/ui), the word "export" is used for two completely 
+different things. They work together to create a clean experience for your Next.js app.
+
+1. The package.json Exports (The "Front Door")
+This tells Node.js and your bundler (Webpack/Turbopack) WHERE to look when another app imports this 
+package.
+{
+  "exports": {
+    ".": "./index.ts"
+  }
+}
+- "." means the root name of the package ("@repo/db").
+- "./index.ts" is the actual file it should load.
+
+Are there other combinations? Yes! You can create "Subpath exports". For example, in a UI package, 
+you might not want to load every single component at once. You could do this:
+{
+  "exports": {
+    "./button": "./src/button.tsx",
+    "./card": "./src/card.tsx"
+  }
+}
+Then, in your Next.js app, you would import them like this: 
+import { Button } from "@repo/ui/button";
+
+2. The index.ts Export (The "Re-export" or "Barrel")
+This is a JavaScript/TypeScript feature. 
+export * from "@prisma/client";
+
+It means: "Take every single type, function, and enum that @prisma/client provides, and pass them through this file so others can use them."
+
+Why do we do this? When you query your database in Next.js, you often need the TypeScript types that 
+Prisma generated (like the `User` type) to type your functions. Because of `export * from "@prisma/client"`, your Next.js app DOES NOT need to install `@prisma/client`. It can get the types directly from your `@repo/db` package!
+
+3. How they work together (The Magic)
+Because of these two lines of code working together, you can do this in your Next.js app:
+
+// 1. "prisma" comes from your custom singleton in index.ts
+// 2. "User" comes from the `export * from "@prisma/client"`
+// 3. Both are imported cleanly from "@repo/db" because of the package.json "." export!
+
+import { prisma, User } from "@repo/db";
+
+export default async function Page() {
+  const users: User[] = await prisma.user.findMany();
+}
+
+Summary:
+- package.json "exports" defines the PATHS other apps are allowed to import from.
+- index.ts "export *" defines the ACTUAL CODE/TYPES that get sent through those paths.
+
+===========================================================================
+SETTING UP RECOIL (STATE MANAGEMENT) IN TURBOREPO
+===========================================================================
+
+The Mental Model (How it works in a Monorepo)
+1. @repo/store: Acts as the single source of truth for your global state. It holds all your Recoil 
+atoms, selectors, and custom hooks.
+2. apps/* (Next.js, React): Your apps don't define atoms directly. They simply import the custom 
+hooks (like `useBalance`) from @repo/store to read and update state.
+
+Step 1: Initialize the Store Package
+Create a new folder at `packages/store`. Navigate into it and initialize the project:
+
+# 1. Create package.json
+pnpm init
+
+# 2. Install Recoil (Runtime dependency)
+pnpm add recoil
+
+# 3. Install TypeScript and your shared config (Dev dependencies)
+pnpm add -D typescript @repo/typescript-config --workspace
+
+Step 2: Configure tsconfig.json
+Create `packages/store/tsconfig.json`. 
+(Why: We use "extends" to inherit base rules, but we MUST define "include" and "outDir" locally 
+because TypeScript resolves folder paths relative to the file they are written in).
+
+{
+  "extends": "@repo/typescript-config/react-library.json",
+  "compilerOptions": {
+    "outDir": "dist"
+  },
+  "include": ["src"],
+  "exclude": ["node_modules", "dist"]
+}
+
+Step 3: Configure package.json
+Update `packages/store/package.json`. 
+(Why: We delete the default `"main": "index.js"` because it is legacy boilerplate. Instead, we use 
+`"exports"` to explicitly tell Next.js exactly which files it is allowed to import).
+
+{
+  "name": "@repo/store",
+  "version": "1.0.0",
+  "private": true,
+  "exports": {
+    "./useBalance": "./src/hooks/useBalance.ts"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "recoil": "^0.7.7"
+  }
+}
+
+Step 4: Create the State Files
+Create your atoms and hooks inside a `src` folder.
+
+1. `packages/store/src/atoms/balance.ts`
+import { atom } from "recoil";
+
+export const balanceAtom = atom<number>({
+    key: "balance",
+    default: 0,
+});
+
+2. `packages/store/src/hooks/useBalance.ts`
+(Note: In modern TypeScript with "nodenext" module resolution, relative imports inside the package 
+require the `.js` extension, even if the file is actually `.ts`).
+
+import { useRecoilValue } from "recoil";
+import { balanceAtom } from "../atoms/balance.js";
+
+export const useBalance = () => {
+    const value = useRecoilValue(balanceAtom);
+    return value;
+};
+
+Step 5: Consume in Your Apps
+To use this state in your Next.js app:
+
+1. Link the package:
+Run this inside your app's folder (e.g., `apps/user`):
+pnpm add @repo/store --workspace
+
+2. Sync the workspace:
+Go back to the ROOT of your entire Turborepo and run:
+pnpm install
+
+3. Import and use:
+You can now import the hook exactly as you defined it in the "exports" field!
+import { useBalance } from "@repo/store/useBalance";
+
+export default function Dashboard() {
+  const balance = useBalance();
+  return <div>Your balance is: {balance}</div>;
+}
+
+*(Note: Don't forget that your Next.js app still needs a `<RecoilRoot>` provider wrapping the application in `layout.tsx` or `app.tsx` for Recoil to work!)*
+
+
+===========================================================================
+IMPORTANT CONCEPTS: TYPESCRIPT & PACKAGE CONFIGURATION
+===========================================================================
+
+1. Why use "extends" in tsconfig.json? (The DRY Principle)
+If you have 10 packages in a monorepo, copy-pasting a 50-line tsconfig.json into every single one is a nightmare. If you want to change one strict rule, you have to edit 10 files. 
+By using `"extends": "@repo/typescript-config/react-library.json"`, you put all your global rules in ONE central file. Your local packages just inherit them.
+
+2. Why do "include" and "exclude" have to be written separately?
+You cannot put `"include": ["src"]` inside the shared `@repo/typescript-config`. 
+Why? Because in TypeScript, paths are resolved RELATIVE to the file they are written in. If you put 
+it in the shared config, TypeScript will look for a `src` folder inside the `typescript-config` 
+package, NOT inside your `store` package! 
+- Global rules (strict, target, jsx) go in the shared config.
+- Folder paths (include, exclude, outDir) MUST go in the local tsconfig.json.
+
+3. What do "include" and "exclude" actually do?
+- `"include": ["src"]`: Tells the TypeScript compiler, "Only look for and check TypeScript files inside the `src` folder."
+- `"exclude": ["node_modules", "dist"]`: Tells TypeScript, "Do NOT waste time checking these folders." (node_modules is already compiled, and dist is your own output).
+
+4. Why define things in package.json if they are already in tsconfig.json?
+Because TypeScript and Node.js/Next.js do not talk to each other. They are two completely separate tools.
+- `tsconfig.json` is for the TRANSLATOR (TypeScript): It tells the compiler how to check your code for errors and where to put the compiled files. Once it finishes, it goes to sleep.
+- `package.json` is for the READER (Node.js/Next.js): When your app is actually running or building, Node.js needs to know
